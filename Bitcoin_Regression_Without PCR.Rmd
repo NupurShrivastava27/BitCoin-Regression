@@ -1,0 +1,386 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+Source of bitcoin data is https://blockchain.info/stats
+Load required libraries
+```{r}
+library(corrplot)
+library(ggplot2)
+library(ggfortify)
+library(zoo)
+library(dplyr)
+library(lubridate)
+library(car)
+library(plotly)
+library(reshape2) # for melt
+library(data.table)
+library(animation)
+library(feather)
+```
+
+Data Import and Cleaning
+Read the dataset
+```{r}
+bitcoin = read.csv("bitcoin_data.csv", header = TRUE)
+str(bitcoin)
+
+
+```
+
+#Modify the column names to remove "_btc"
+```{r}
+bitcoin$Date <- as.Date(bitcoin$Date, format = "%m/%d/%y")
+head(bitcoin)
+```
+
+Check for missing values
+```{r}
+anyNA(bitcoin)
+
+```
+Get summary of the columns in bitcoin dataset
+
+```{r}
+summary(bitcoin)
+```
+
+Only the field trade_volume, has 4 NA's. On investigating more on the missing values for trade volume, it seems that there was a trade freeze during those dates. So we replace the NA's with 0. We can also replace them by means method but since there was not trade that happened during that period, it better to go with te assumption that volume is 0.
+
+
+```{r}
+bitcoin[is.na(bitcoin)] = 0
+anyNA(bitcoin)
+```
+from above There are no missing values in the data now.
+```{r}
+ggplot(bitcoin, aes(bitcoin$Date, bitcoin$Price,)) +
+  geom_point(color = "dark blue") +
+  ggtitle("Bitcoin values in USD trend") +
+  labs ( x="Date" , y="Bitcoin price in USD") + 
+  theme_minimal()
+```
+
+Find variables with high correlation to bitcoin market price
+```{r}
+cor = cor(bitcoin[,c(2:13)])
+corrplot(cor, method = "square", type="upper", tl.srt = 50, tl.col = "black", tl.cex = 0.6, title = "Correlation of Variables")
+```
+
+```{r}
+correlation = as.data.frame(cor)
+highly_correlated = correlation[correlation$Price>= 0.75, ]
+rownames(highly_correlated)
+```
+Model building
+Additive model with all variables
+
+```{r}
+fit.lm1 = lm(Price ~., data=bitcoin)
+summary(fit.lm1)
+```
+R^2 is 99%, which might indicate overfitting, some variables like trade volume, output value and estimated transaction value are insignificant in the model.
+
+Check residuals
+```{r}
+autoplot(fit.lm1, label = 0, col = "dark green") +
+  theme_minimal()
+
+```
+Residuals indicate heteroscedasticity and the data deviates from normal.
+
+Running step function to get a model with the lowest AIC
+```{r}
+fit_full = lm(Price~., data=bitcoin)
+step(fit_full)
+```
+Fit the model with lowest AIC and check for residuals
+
+```{r}
+fit.lm2= lm(formula = Price ~  Date + Day + Week + Transaction_fees..BTC. + 
+    No_of_transactions + Output_value..BTC. + estimated_transaction_value + 
+    Miners_revenue + Cost_per_transaction + Difficulty + Hash_rate, , data = bitcoin)
+summary(fit.lm2)
+```
+All the variables are significant in the model
+
+```{r}
+autoplot(fit.lm2, label = 0, col = "dark green") +
+  theme_minimal()
+```
+Residuals indicate heteroscedasticity and the data deviates from normal.
+
+Polynomial transaction will not make much of an impact on the data.
+
+Useful link on heteroscedasticity of time series data http://statisticsbyjim.com/regression/heteroscedasticity-regression/
+
+Another method that can be useful in solving heteroscedasticity is weighted regression, https://newonlinecourses.science.psu.edu/stat501/node/431/
+
+```{r}
+wts = 1/fitted(lm(abs(residuals(fit.lm2)) ~ fitted(fit.lm2)))^2
+
+fit.lm3= lm(formula = Price ~ Date + Day + Week + Transaction_fees..BTC. + 
+    No_of_transactions + Output_value..BTC. + estimated_transaction_value + 
+    Miners_revenue + Cost_per_transaction + Difficulty + Hash_rate, data = bitcoin, weights=wts)
+
+autoplot(fit.lm3, label = 0, col = "dark green") +
+  theme_minimal()
+```
+Applied weighted regression did not help much.
+
+For time series data, these forms of transition helps in making the data stationary https://datascienceplus.com/time-series-analysis-in-r-part-2-time-series-transformations/
+
+Transforming the variables to % changes
+
+```{r}
+bitcoin_final <- subset(bitcoin, bitcoin$Price>0)
+bitcoin_final = mutate(bitcoin_final, pChange=(bitcoin_final$Price-lag(bitcoin_final$Price))/lag(bitcoin_final$Price)*100)
+bitcoin_final = mutate(bitcoin_final, Transaction_fees..BTC._pChange=(bitcoin_final$Transaction_fees..BTC.-lag(bitcoin_final$Transaction_fees..BTC.))/lag(bitcoin_final$Transaction_fees..BTC.)*100)
+bitcoin_final = mutate(bitcoin_final, Output_value..BTC._pChange=(bitcoin_final$Output_value..BTC.-lag(bitcoin_final$Output_value..BTC.))/lag(bitcoin_final$Output_value..BTC.)*100)
+bitcoin_final = mutate(bitcoin_final, estimated_transaction_value_pChange=(bitcoin_final$estimated_transaction_value-lag(bitcoin_final$estimated_transaction_value))/lag(bitcoin_final$estimated_transaction_value)*100)
+bitcoin_final = mutate(bitcoin_final, Miners_revenue_pChange=(bitcoin_final$Miners_revenue-lag(bitcoin_final$Miners_revenue))/lag(bitcoin_final$Miners_revenue)*100)
+bitcoin_final = mutate(bitcoin_final, No_of_transactions_pChange=(bitcoin_final$No_of_transactions-lag(bitcoin_final$No_of_transactions))/lag(bitcoin_final$No_of_transactions)*100)
+bitcoin_final = mutate(bitcoin_final, Cost_per_transaction_pChange=(bitcoin_final$Cost_per_transaction-lag(bitcoin_final$Cost_per_transaction))/lag(bitcoin_final$Cost_per_transaction)*100)
+bitcoin_final = mutate(bitcoin_final, Difficulty_pChange=(bitcoin_final$Difficulty-lag(bitcoin_final$Difficulty))/lag(bitcoin_final$Difficulty)*100)
+bitcoin_final = mutate(bitcoin_final, Hash_rate_pChange=(bitcoin_final$Hash_rate-lag(bitcoin_final$Hash_rate))/lag(bitcoin_final$Hash_rate)*100)
+
+is.na(bitcoin_final) = sapply(bitcoin_final, is.infinite)
+bitcoin_final[is.na(bitcoin_final)]=0
+summary(bitcoin_final)
+```
+
+```{r}
+fit.lm4= lm(formula = pChange ~   Date + Day + Week + Transaction_fees..BTC._pChange + 
+    No_of_transactions_pChange + Output_value..BTC._pChange + estimated_transaction_value_pChange + 
+    Miners_revenue_pChange + Cost_per_transaction_pChange + Difficulty_pChange + Hash_rate_pChange, data = bitcoin_final)
+
+summary(fit.lm4)
+
+```
+Removing the insignificant variables one by one, we arrive at the following model or by using step function to get the model with lowest AIC value
+
+```{r}
+step(fit.lm4)
+```
+Fitting the model with lowest AIC and checking residuals.
+```{r}
+fir.lm5 <- lm(formula = pChange ~ No_of_transactions_pChange + Miners_revenue_pChange + 
+   Difficulty_pChange + Hash_rate_pChange, data = bitcoin_final)
+
+summary(fit.lm5)
+
+
+autoplot(fit.lm5, label = 0, col = "dark green") +
+  theme_minimal()
+
+lmtest::bptest(fit.lm5) # Breusch-Pagan test
+car::ncvTest(fit.lm5)  # Breusch-Pagan test
+```
+Test fail again 
+The test for homogenous variance has p-value < 0.05, therefore we cannot assume constant variance
+
+After trying various transformations and other regression methods, the data assumption of constant variance was not satisfied.
+
+Next step, is to explore the trend in the data that is causing non-constant variance
+
+```{r}
+ggplotly()
+```
+
+We can see that most of bitcoin fluctuations started from June/July 2017 and the bitcoin price before that is in a few hundreds, which may be causing high variance in the data.
+
+Useful links on time series ggplots: http://www.sthda.com/english/articles/32-r-graphics-essentials/128-plot-time-series-data-using-ggplot/ http://neondataskills.org/R/time-series-plot-ggplot/ https://plot.ly/ggplot2/time-series/
+
+Start work on new model with data after June 2016
+Use bitcoin_final dataset to go ahead, as it has the transformed variables too incase transformation is needed.
+
+```{r}
+bitcoin_new = subset(bitcoin_final, bitcoin_final$Date >= '2016-06-01')
+bitcoin_new$Day = as.numeric(bitcoin_new$Day)
+head(bitcoin_new)
+
+```
+
+```{r}
+ggplot(bitcoin_new, aes(bitcoin_new$Date, bitcoin_new$Price,)) + geom_line() +
+  geom_point(color = "dark blue") +
+  ggtitle("Bitcoin values in USD trend") +
+  labs ( x="Date" , y="Bitcoin price in USD") + 
+  theme_minimal()
+```
+Find variables with high correlation to bitcoin market price
+```{r}
+cor = cor(bitcoin_new[,c(2:12)])
+corrplot(cor, method = "square", type="upper", tl.srt = 50, tl.col = "black", tl.cex = 0.6, title = "Correlation of Variables")
+```
+These are the highly correlated variables to bitcoin market price
+```{r}
+correlation = as.data.frame(cor)
+highly_correlated = correlation[correlation$Price>= 0.75, ]
+rownames(highly_correlated)
+```
+Model building
+Additive model with all variables
+
+```{r}
+bitcoin_new_set = bitcoin_new[,c(1:12)]
+fit.lm1_1 = lm(Price ~., data=bitcoin_new_set)
+summary(fit.lm1_1)
+```
+
+R^2 is almost 100%, which might indicate overfitting, some variables like trade volume, output value and estimated transaction value are insignificant in the model.
+
+Check residuals
+
+```{r}
+autoplot(fit.lm1_1, label = 0, col = "dark green") +
+  theme_minimal()
+#Residuals indicate heteroscedasticity and the data deviates from normal.
+
+#Running step function to get a model with the lowest AIC
+step(fit.lm1_1)
+
+```
+Fit the model with lowest AIC and check for residuals
+
+```{r}
+fit.lm2_2= lm(formula = Price ~ Date + Week + Transaction_fees..BTC. + estimated_transaction_value +
+    No_of_transactions + Miners_revenue + Cost_per_transaction + Difficulty + Hash_rate, , data = bitcoin_new_set)
+summary(fit.lm2_2)
+
+```
+
+All the variables are significant in the model
+
+```{r}
+autoplot(fit.lm2_2, label = 0, col = "dark green") +
+  theme_minimal()
+```
+Residuals indicate heteroscedasticity and the data deviates from normal.
+
+Using weighted regression
+```{r}
+wts = 1/fitted(lm(abs(residuals(fit.lm2_2)) ~ fitted(fit.lm2_2)))^2
+
+fit.lm3_3= lm(formula = Price ~ Transaction_fees..BTC. + 
+    No_of_transactions + Miners_revenue + Cost_per_transaction + Difficulty + Hash_rate, , data = bitcoin_new_set, weights=wts)
+
+autoplot(fit.lm3_3, label = 0, col = "dark green") +
+  theme_minimal()
+```
+Applied weighted regression did not help much.
+
+```{r}
+residualPlots(fit.lm3_3)
+```
+Using the transformed variables to % changes
+
+Transaction_fees..BTC. - Keep it as is No_of_transactions - Keep it as is Miners_revenue - Use pChange Cost_per_transaction - Keep it as is Difficulty - As this is the difficulty level, keep it as is Hash_rate - Already a rate, keep it as is
+
+Apply poly transaformation on Transaction_fees..BTC. and Miners_revenue
+
+```{r}
+fit.lm5_5= lm(formula = pChange ~ poly(Transaction_fees..BTC.,2) + 
+    No_of_transactions + poly(Miners_revenue_pChange,2) + Cost_per_transaction + Difficulty + poly(Hash_rate,1) , data = bitcoin_new)
+
+summary(fit.lm5_5)
+
+autoplot(fit.lm5_5, label = 0, col = "dark green") +
+  theme_minimal()
+```
+Residuals now look random, lets do test for homogenous variance
+
+```{r}
+lmtest::bptest(fit.lm5_5) # Breusch-Pagan test
+car::ncvTest(fit.lm5_5)  # Breusch-Pagan test
+```
+p-value > 0.05, we can assume the data has constant variance
+```{r}
+shapiro.test(residuals(fit.lm5_5))
+residualPlots(fit.lm5_5)
+```
+Residuals vs Predictors plots looks good!
+
+The model fit.lm5_5 with R^2 = 31% can be considered as the final model that has constant variance
+
+##                                 Test stat Pr(>|Test stat|)
+## poly(Transaction_fees..BTC., 2)                           
+## No_of_transactions                -0.8242           0.4104
+## poly(Miners_revenue_pChange, 2)                           
+## Cost_per_transaction              -0.8397           0.4016
+## Difficulty                         0.2185           0.8271
+## poly(Hash_rate, 1)                                        
+## Tukey test                         0.7554           0.4500
+
+Residuals vs Predictors plots looks good!
+
+The model fit.lm5_5 with R^2 = 31% can be considered as the final model that has constant variance
+
+```{r}
+bitcoin_new= as.data.table(bitcoin_new)
+datas <- rbindlist(list(bitcoin_new[, .(pChange, Date)],data.table(value = fit.lm5_5$fitted.values, data_time = bitcoin_new[, Date])))
+datas[, type := rep(c("Real", "Fitted"), each = nrow(bitcoin_new))]
+ 
+ggplot(data = datas, aes(Date, pChange, group = type, colour = type)) +
+  geom_line(size = 0.8) +
+  theme_bw() +
+  labs(x = "Date", y = "Bitcoin price change %",
+       title = "Fit from Multiple Linear Regression")
+```
+
+
+Outlier and leverage testing
+
+```{r}
+qqPlot(fit.lm5_5, id.n = 2, col = "darkgoldenrod1", col.lines = "indianred1")
+```
+
+
+```{r}
+outlierTest(fit.lm5_5)
+```
+
+```{r}
+influencePlot(fit.lm5_5)
+```
+
+```{r}
+influenceIndexPlot(fit.lm5_5)
+```
+Cook distance < 1 => no outliers
+
+The model fit.lm5_5 with R^2 = 31% can be considered as the final model that has constant variance
+
+```{r}
+bitcoin_new= as.data.table(bitcoin_new)
+datas <- rbindlist(list(bitcoin_new[, .(pChange, Date)],data.table(value = fit.lm5_5$fitted.values, data_time = bitcoin_new[, Date])))
+datas[, type := rep(c("Real", "Fitted"), each = nrow(bitcoin_new))]
+ 
+ggplot(data = datas, aes(Date, pChange, group = type, colour = type)) +
+  geom_line(size = 0.8) +
+  theme_bw() +
+  labs(x = "Date", y = "Bitcoin price change %",
+       title = "Fit from Multiple Linear Regression")
+```
+
+Split the data to train and test set
+
+```{r}
+set.seed(123)
+indexes=sample(1:nrow(bitcoin_new), size=0.2*nrow(bitcoin_new))
+test = bitcoin_new[indexes,]
+train = bitcoin_new[-indexes,]
+#Use model fit.lm5_5 on train set
+
+final_model = lm(formula = pChange ~ poly(Transaction_fees..BTC.,2) + 
+    No_of_transactions + poly(Miners_revenue_pChange,2) + Cost_per_transaction + Difficulty + poly(Hash_rate,1) , data = train)
+test$pred = predict(final_model, test)
+#Get the error in prediction
+
+error = mean(abs(test$pred - test$pChange))
+error
+## [1] 4.133327
+```
+*******THE END *******
+
