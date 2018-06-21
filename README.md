@@ -6,5 +6,5 @@ Introduction:
   these transactions occur with anonymity. 
   Bitcoin has shown significant market capitalization growth in last few years. It is important to understand what 
   drives the fluctuations of the Bitcoin exchange price and to what extent they are predictable.   The graphical representation
-  in Exhibit 1(a) resemble the blue print of a roller coaster more than a financial asset. 
+  in [https://github.com/NupurShrivastava27/BitCoin-Regression/issues/1] resemble the blue print of a roller coaster more than a financial asset. 
   
