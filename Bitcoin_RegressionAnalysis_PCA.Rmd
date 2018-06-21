@@ -1,0 +1,189 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+                    BitCoin Regression Analysis using Principla Components 
+
+```{r}
+library(corrplot)
+library(ggplot2)
+library(ggfortify)
+library(zoo)
+library(dplyr)
+library(lubridate)
+library(plotly)
+
+```
+
+```{r}
+bitcoin <- read.csv("bitcoin_data.csv", header = TRUE)
+str(bitcoin)
+summary(bitcoin)
+
+bitcoin$Date <- as.Date(bitcoin$Date, format = "%m/%d/%Y")
+str(bitcoin)
+index <- which(is.na(bitcoin$trade_volume))
+summary(index)
+bitcoin[is.na(bitcoin)] = 0
+```
+Trend plays an important role in trading, since there was no or few hundreds of hike in Bitcoin price from 2009 till 2015 
+```{r}
+hist(bitcoin$Price, col = "skyblue")
+mybitcoin <- subset(bitcoin, bitcoin$Date >= '0016-06-01')
+head(mybitcoin)
+
+```
+
+
+Bitcoin price  trend over the period of time 
+```{r}
+ggplot(bitcoin, aes(bitcoin$Date, bitcoin$Price,)) + geom_line() +
+  geom_point(color = "dark blue") +
+  ggtitle("Bitcoin values in USD trend") +
+  labs ( x="Date" , y="Bitcoin price in USD") 
+```
+Correlation on Market Price 
+```{r}
+cor = cor(mybitcoin[,c(2:13)])
+corrplot(cor, method = "square", type="upper", tl.srt = 65, tl.col = "black", tl.cex = 0.7, 
+title = "")
+
+#list of highly corelated fields 
+correlation = as.data.frame(cor)
+highly_correlated = correlation[correlation$market_price>= 0.75, ]
+rownames(highly_correlated)
+
+
+library(PerformanceAnalytics)
+cor <- mybitcoin[, c(2:13)]
+chart.Correlation(cor, histogram=TRUE, pch=19)
+```
+# Check if there are any missing values
+```{r}
+library(Rcpp)
+library(Amelia)
+missing<-missmap(mybitcoin[2:13], main = "Missing values vs observed")
+summary(mybitcoin$trade_volume)
+```
+We are not using column Date for our further regression model.
+
+```{r}
+mybitcoin <- select(mybitcoin, -Date)
+```
+
+```{r}
+
+initial_regression <- lm(Price ~ . , data=mybitcoin)
+summary(initial_regression)
+
+library(ggplot2)
+library(ggfortify)
+library(car)
+autoplot(initial_regression, col = "goldenrod1") +  theme_minimal()
+#residualPlots(initial_regression)
+
+#Test for constant variance fails
+lmtest::bptest(initial_regression) # Breusch-Pagan test
+car::ncvTest(initial_regression)  # Breusch-Pagan test
+shapiro.test(residuals(initial_regression))
+
+```
+All variables are significant and R ^2 is 99.47%, which seems to be overfitting 
+
+```{r}
+pcabitcoin=mybitcoin[,-3,13]
+
+```
+
+2. PCA
+
+```{r}
+pca_bitcoin <- prcomp(scale(pcabitcoin[,-c(12,13,14)])) # removing Date, response
+summary(pca_bitcoin)
+
+plot(pca_bitcoin)
+autoplot(pca_bitcoin, col= "blue")
+
+biplot(pca_bitcoin)
+
+```
+```{r}
+# sqrt of eigenvalues
+#pca_bitcoin$sdev
+pca_bitcoin$rotation
+```
+                              PC1         PC2         PC3         PC4          PC5
+Day                          0.10839617 -0.37296518 -0.57861384  0.03483389  0.070543539
+Week                         0.11183986 -0.36857620 -0.58202769  0.03536181  0.065073134
+Transaction_fees..BTC.      -0.18412476 -0.41741116  0.31605826 -0.09918104 -0.207288582
+No_of_transactions          -0.01628881 -0.44004318  0.27801378 -0.54949391  0.503308158
+Output_value..BTC.           0.13179510 -0.33782768  0.31571415  0.80893038  0.281300888
+estimated_transaction_value -0.38585200 -0.25619785  0.02779089  0.06961858 -0.017386038
+Miners_revenue              -0.41647402 -0.16889134 -0.01041179 -0.02157734  0.040479470
+Cost_per_transaction        -0.43426583  0.01981957 -0.07564301  0.10202948 -0.002831797
+Difficulty                  -0.37167268  0.24899477 -0.15200716  0.08695035  0.357914898
+Hash_rate                   -0.38058192  0.23533726 -0.13512286  0.07029819  0.389944922
+Trade_volume                -0.36097444 -0.17639295 -0.04028549  0.05623887 -0.577288707
+
+```{r}
+#As per PCA importance 
+fit.pca <- lm(Price ~ estimated_transaction_value+Difficulty+Hash_rate+Cost_per_transaction+Miners_revenue+Trade_volume,  data=mybitcoin)
+summary(fit.pca)
+
+autoplot(fit.pca, col = "goldenrod1") +  theme_minimal()
+residualPlots(fit.pca)
+
+#Test for constant variance fails
+lmtest::bptest(fit.pca) # Breusch-Pagan test
+car::ncvTest(fit.pca)  # Breusch-Pagan test
+shapiro.test(residuals(fit.pca))
+
+```
+Non-constant Variance fails  
+Not now
+Let's try ploy transformation becuase of 
+```{r}
+fit.3= lm(formula = Price~Difficulty+Hash_rate+estimated_transaction_value+poly(Miners_revenue,2)+poly(Trade_volume,2)+Cost_per_transaction, data=mybitcoin)
+
+summary(fit.3)
+autoplot(fit.3, col = "goldenrod1") +  theme_minimal()
+residualPlots(fit.3)
+
+#Test for constant variance fails
+lmtest::bptest(fit.3) # Breusch-Pagan test
+car::ncvTest(fit.3)  # Breusch-Pagan test
+shapiro.test(residuals(fit.3))
+```
+Residual plots looks better with Normality but Constant variance test Fails 
+We will try the percent change 
+```{r}
+mybitcoin_final <- subset(mybitcoin, mybitcoin$Price>0)
+mybitcoin_final = mutate(mybitcoin_final, pChange=(mybitcoin_final$Price-lag(mybitcoin_final$Price))/lag(mybitcoin_final$Price)*100)
+mybitcoin_final = mutate(mybitcoin_final, Transaction_fees..BTC._pChange=(mybitcoin_final$Transaction_fees..BTC.-lag(mybitcoin_final$Transaction_fees..BTC.))/lag(mybitcoin_final$Transaction_fees..BTC.)*100)
+mybitcoin_final = mutate(mybitcoin_final, Output_value..BTC._pChange=(mybitcoin_final$Output_value..BTC.-lag(mybitcoin_final$Output_value..BTC.))/lag(mybitcoin_final$Output_value..BTC.)*100)
+mybitcoin_final = mutate(mybitcoin_final, estimated_transaction_value_pChange=(mybitcoin_final$estimated_transaction_value-lag(mybitcoin_final$estimated_transaction_value))/lag(mybitcoin_final$estimated_transaction_value)*100)
+mybitcoin_final = mutate(mybitcoin_final, Miners_revenue_pChange=(mybitcoin_final$Miners_revenue-lag(mybitcoin_final$Miners_revenue))/lag(mybitcoin_final$Miners_revenue)*100)
+mybitcoin_final = mutate(mybitcoin_final, No_of_transactions_pChange=(mybitcoin_final$No_of_transactions-lag(mybitcoin_final$No_of_transactions))/lag(mybitcoin_final$No_of_transactions)*100)
+mybitcoin_final = mutate(mybitcoin_final, Cost_per_transaction_pChange=(mybitcoin_final$Cost_per_transaction-lag(mybitcoin_final$Cost_per_transaction))/lag(mybitcoin_final$Cost_per_transaction)*100)
+mybitcoin_final = mutate(mybitcoin_final, Difficulty_pChange=(mybitcoin_final$Difficulty-lag(mybitcoin_final$Difficulty))/lag(mybitcoin_final$Difficulty)*100)
+mybitcoin_final = mutate(mybitcoin_final, Hash_rate_pChange=(mybitcoin_final$Hash_rate-lag(mybitcoin_final$Hash_rate))/lag(mybitcoin_final$Hash_rate)*100)
+mybitcoin_final = mutate(mybitcoin_final, Trade_volume_pChange=(mybitcoin_final$Trade_volume-lag(mybitcoin_final$Trade_volume))/lag(mybitcoin_final$Trade_volume)*100)
+is.na(mybitcoin_final) = sapply(mybitcoin_final, is.infinite)
+mybitcoin_final[is.na(mybitcoin_final)]=0
+summary(mybitcoin_final)
+```
+Apply on important variable which PCA defines
+```{r}
+fit.pp <- lm(pChange ~ Difficulty_pChange + poly(Hash_rate_pChange,1) + poly(Miners_revenue_pChange,2) +estimated_transaction_value_pChange+Cost_per_transaction_pChange+poly(Trade_volume_pChange,2),  data=mybitcoin_final)
+summary(fit.pp)
+
+autoplot(fit.pp, col = "goldenrod1") +  theme_minimal()
+
+#Test for constant variance fails
+lmtest::bptest(fit.pp) # Breusch-Pagan test
+car::ncvTest(fit.pp)  # Breusch-Pagan test
+shapiro.test(residuals(fit.pp))
+residualPlots(fit.pp)
+```
+
